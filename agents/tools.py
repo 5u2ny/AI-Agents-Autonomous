@@ -1,129 +1,79 @@
-"""Shared tools the autonomous agents can use.
+"""Shared in-process tools for the autonomous agents (Claude Agent SDK).
 
-These are intentionally self-contained and offline-friendly so the agents run
-without external API keys beyond Anthropic. Swap the handlers for real
-integrations (CRM, web search, analytics) when wiring into production.
+These are defined with the SDK's ``@tool`` decorator and exposed via an
+in-process MCP server, so they run inside this Python process — no extra
+services, no API key. They sit alongside the SDK's built-in tools (``Write``
+for saving deliverables, ``WebSearch`` for live market research).
 """
 
 from __future__ import annotations
 
-import json
-import os
-from datetime import date
-from pathlib import Path
 from typing import Any
 
-from .core import Tool
+from claude_agent_sdk import tool, create_sdk_mcp_server
 
-# Where the agents persist their deliverables.
-ARTIFACT_DIR = Path(os.environ.get("AGENT_ARTIFACT_DIR", "runs"))
+# In-memory working memory for the duration of a run.
+_SCRATCHPAD: list[str] = []
 
-
-def _save_artifact(payload: dict[str, Any]) -> str:
-    name = payload["name"]
-    content = payload["content"]
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    path = ARTIFACT_DIR / name
-    path.write_text(content, encoding="utf-8")
-    return f"Saved artifact to {path} ({len(content)} chars)."
+# The MCP server name; tool names are addressed as mcp__<server>__<tool>.
+SERVER_NAME = "toolkit"
 
 
-def _scratchpad(payload: dict[str, Any]) -> str:
-    """A durable note store so the agent can plan across many steps."""
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    path = ARTIFACT_DIR / "scratchpad.json"
-    notes: list[str] = []
-    if path.exists():
-        notes = json.loads(path.read_text(encoding="utf-8"))
-
-    action = payload.get("action", "add")
-    if action == "add":
-        notes.append(payload["note"])
-        path.write_text(json.dumps(notes, indent=2), encoding="utf-8")
-        return f"Note added. {len(notes)} note(s) on the scratchpad."
-    if action == "list":
-        return json.dumps(notes, indent=2) if notes else "Scratchpad is empty."
-    if action == "clear":
-        path.write_text("[]", encoding="utf-8")
-        return "Scratchpad cleared."
-    return f"Unknown scratchpad action: {action}"
+def _text(msg: str) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": msg}]}
 
 
-def _calculator(payload: dict[str, Any]) -> str:
-    """Evaluate a basic arithmetic expression (for funnel / ROI / TAM math)."""
-    expr = payload["expression"]
+@tool(
+    "calculator",
+    "Evaluate an arithmetic expression for market sizing, funnels, budgets and "
+    "ROI, e.g. '50000 * 0.03 * 1200'. Use this for ALL numeric reasoning.",
+    {"expression": str},
+)
+async def calculator(args: dict[str, Any]) -> dict[str, Any]:
+    expr = str(args.get("expression", ""))
     allowed = set("0123456789.+-*/() eE")
-    if not set(expr) <= allowed:
-        return "ERROR: expression contains disallowed characters."
+    if not expr or not set(expr) <= allowed:
+        return _text("ERROR: expression empty or contains disallowed characters.")
     try:
-        return str(eval(expr, {"__builtins__": {}}, {}))  # noqa: S307 - sandboxed chars
-    except Exception as exc:
-        return f"ERROR: {exc}"
+        return _text(str(eval(expr, {"__builtins__": {}}, {})))  # noqa: S307
+    except Exception as exc:  # surface the error to the model
+        return _text(f"ERROR: {exc}")
 
 
-def _today(_: dict[str, Any]) -> str:
-    return date.today().isoformat()
+@tool(
+    "scratchpad",
+    "Working memory across steps. action='add' with a note to record a "
+    "decision/finding; action='list' to read everything back; action='clear' "
+    "to reset.",
+    {"action": str, "note": str},
+)
+async def scratchpad(args: dict[str, Any]) -> dict[str, Any]:
+    action = str(args.get("action", "add"))
+    if action == "add":
+        note = str(args.get("note", "")).strip()
+        if not note:
+            return _text("ERROR: 'note' is required when action='add'.")
+        _SCRATCHPAD.append(note)
+        return _text(f"Note added. {len(_SCRATCHPAD)} note(s) on the scratchpad.")
+    if action == "list":
+        if not _SCRATCHPAD:
+            return _text("Scratchpad is empty.")
+        return _text("\n".join(f"{i+1}. {n}" for i, n in enumerate(_SCRATCHPAD)))
+    if action == "clear":
+        _SCRATCHPAD.clear()
+        return _text("Scratchpad cleared.")
+    return _text(f"Unknown scratchpad action: {action!r}")
 
 
-def save_artifact_tool() -> Tool:
-    return Tool(
-        name="save_artifact",
-        description="Persist a finished deliverable (plan, doc, CSV) to disk so "
-                    "the human can use it. Call this for every major output.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {"type": "string",
-                          "description": "Filename, e.g. 'gtm_plan.md'."},
-                "content": {"type": "string", "description": "Full file content."},
-            },
-            "required": ["name", "content"],
-        },
-        handler=_save_artifact,
+def build_toolkit():
+    """Return the in-process MCP server exposing the shared tools."""
+    return create_sdk_mcp_server(
+        name=SERVER_NAME,
+        version="1.0.0",
+        tools=[calculator, scratchpad],
     )
 
 
-def scratchpad_tool() -> Tool:
-    return Tool(
-        name="scratchpad",
-        description="Working memory. Jot intermediate findings, decisions, or a "
-                    "running plan so you can reason across many steps.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": ["add", "list", "clear"]},
-                "note": {"type": "string",
-                          "description": "Required when action is 'add'."},
-            },
-            "required": ["action"],
-        },
-        handler=_scratchpad,
-    )
-
-
-def calculator_tool() -> Tool:
-    return Tool(
-        name="calculator",
-        description="Evaluate arithmetic for sizing markets, funnels, budgets "
-                    "and ROI (e.g. '50000 * 0.03 * 1200').",
-        input_schema={
-            "type": "object",
-            "properties": {"expression": {"type": "string"}},
-            "required": ["expression"],
-        },
-        handler=_calculator,
-    )
-
-
-def today_tool() -> Tool:
-    return Tool(
-        name="today",
-        description="Get today's date (ISO format) for scheduling roadmaps.",
-        input_schema={"type": "object", "properties": {}},
-        handler=_today,
-    )
-
-
-def common_tools() -> list[Tool]:
-    """The default toolbelt shared by both agents."""
-    return [save_artifact_tool(), scratchpad_tool(), calculator_tool(), today_tool()]
+def toolkit_tool_names() -> list[str]:
+    """Fully-qualified names so they can be pre-approved in allowed_tools."""
+    return [f"mcp__{SERVER_NAME}__calculator", f"mcp__{SERVER_NAME}__scratchpad"]

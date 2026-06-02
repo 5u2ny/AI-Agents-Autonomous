@@ -1,53 +1,41 @@
-"""Core autonomous-agent engine.
+"""Core autonomous-agent engine — runs on your Claude subscription.
 
-A small, dependency-light agent loop in the spirit of AutoGPT / BabyAGI but
-built directly on the Anthropic Messages API with tool use:
+Built on the **Claude Agent SDK**, which drives the Claude Code agent loop as a
+library. Authentication piggybacks on whatever Claude Code is logged into, so
+once you've run ``claude login`` with your Pro/Max (or Team) subscription these
+agents run with **no ``ANTHROPIC_API_KEY``** and no per-token billing.
 
-    goal -> [ think -> call tool -> observe ] * N -> final answer
-
-The loop is *autonomous*: once given a goal it decides on its own which tools
-to call and when it is finished. It stops when the model emits a final answer
-(no more tool calls) or when ``max_steps`` is reached.
+The SDK owns the autonomous loop (think -> call tool -> observe -> repeat). We
+just hand it a system prompt, a toolbelt, and a goal.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 try:
-    from anthropic import Anthropic
+    from claude_agent_sdk import (
+        query,
+        ClaudeAgentOptions,
+        AssistantMessage,
+        TextBlock,
+        ResultMessage,
+    )
 except ImportError as exc:  # pragma: no cover - friendly hint
     raise ImportError(
-        "The 'anthropic' package is required. Run: pip install -r requirements.txt"
+        "The 'claude-agent-sdk' package is required. Run:\n"
+        "  pip install -r requirements.txt\n"
+        "and make sure the Claude Code CLI is installed and logged in "
+        "(`claude login`)."
     ) from exc
 
 
-DEFAULT_MODEL = os.environ.get("AGENT_MODEL", "claude-sonnet-4-6")
-DEFAULT_MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "12"))
-
-
-@dataclass
-class Tool:
-    """A capability the agent can invoke.
-
-    ``handler`` receives the tool input dict and returns any JSON-serialisable
-    result (or a plain string).
-    """
-
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    handler: Callable[[dict[str, Any]], Any]
-
-    def spec(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.input_schema,
-        }
+# Optional model override. If unset, the SDK uses your subscription's default.
+DEFAULT_MODEL = os.environ.get("AGENT_MODEL")  # e.g. "claude-sonnet-4-6"
+DEFAULT_MAX_TURNS = int(os.environ.get("AGENT_MAX_TURNS", "30"))
 
 
 @dataclass
@@ -55,118 +43,71 @@ class AgentResult:
     """Outcome of an autonomous run."""
 
     answer: str
-    steps: int
-    transcript: list[dict[str, Any]] = field(default_factory=list)
-    stopped_early: bool = False
+    thoughts: list[str] = field(default_factory=list)
 
 
-class AutonomousAgent:
-    """A goal-driven agent that plans and acts using tools until done."""
+class SubscriptionAgent:
+    """A goal-driven autonomous agent powered by your Claude subscription."""
 
     def __init__(
         self,
         name: str,
         system_prompt: str,
-        tools: Optional[list[Tool]] = None,
-        model: str = DEFAULT_MODEL,
-        max_steps: int = DEFAULT_MAX_STEPS,
-        max_tokens: int = 2048,
-        client: Optional[Anthropic] = None,
+        mcp_servers: Optional[dict[str, Any]] = None,
+        allowed_tools: Optional[list[str]] = None,
+        model: Optional[str] = DEFAULT_MODEL,
+        max_turns: int = DEFAULT_MAX_TURNS,
+        cwd: Optional[str] = None,
         verbose: bool = True,
     ) -> None:
         self.name = name
         self.system_prompt = system_prompt
-        self.tools = {t.name: t for t in (tools or [])}
+        self.mcp_servers = mcp_servers or {}
+        self.allowed_tools = allowed_tools or []
         self.model = model
-        self.max_steps = max_steps
-        self.max_tokens = max_tokens
+        self.max_turns = max_turns
+        self.cwd = cwd or os.getcwd()
         self.verbose = verbose
-        self.client = client or Anthropic()
-
-    # -- internals -----------------------------------------------------------
 
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(f"[{self.name}] {msg}")
 
-    def _run_tool(self, name: str, tool_input: dict[str, Any]) -> str:
-        tool = self.tools.get(name)
-        if tool is None:
-            return f"ERROR: unknown tool '{name}'"
-        try:
-            result = tool.handler(tool_input)
-        except Exception as exc:  # surface tool errors back to the model
-            return f"ERROR while running '{name}': {exc}"
-        if isinstance(result, str):
-            return result
-        return json.dumps(result, indent=2, default=str)
+    def _options(self) -> "ClaudeAgentOptions":
+        opts: dict[str, Any] = {
+            "system_prompt": self.system_prompt,
+            "mcp_servers": self.mcp_servers,
+            "allowed_tools": self.allowed_tools,
+            # Auto-accept file writes so the agent can save deliverables
+            # without an interactive prompt.
+            "permission_mode": "acceptEdits",
+            "max_turns": self.max_turns,
+            "cwd": self.cwd,
+        }
+        if self.model:
+            opts["model"] = self.model
+        return ClaudeAgentOptions(**opts)
 
-    # -- public API ----------------------------------------------------------
+    async def run_async(self, goal: str) -> AgentResult:
+        """Pursue ``goal`` autonomously and return the final answer."""
+        self._log(f"goal: {goal}")
+        thoughts: list[str] = []
+        final = ""
+
+        async for message in query(prompt=goal, options=self._options()):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        thoughts.append(block.text)
+                        self._log(block.text.strip())
+            elif isinstance(message, ResultMessage):
+                final = getattr(message, "result", "") or final
+
+        if not final and thoughts:
+            final = thoughts[-1]
+        self._log("done.")
+        return AgentResult(answer=final.strip(), thoughts=thoughts)
 
     def run(self, goal: str) -> AgentResult:
-        """Pursue ``goal`` autonomously and return the final answer."""
-
-        messages: list[dict[str, Any]] = [{"role": "user", "content": goal}]
-        # Cache the (often large) system prompt across turns to cut cost/latency.
-        system = [{"type": "text", "text": self.system_prompt,
-                   "cache_control": {"type": "ephemeral"}}]
-        tool_specs = [t.spec() for t in self.tools.values()]
-
-        transcript: list[dict[str, Any]] = []
-        self._log(f"goal: {goal}")
-
-        for step in range(1, self.max_steps + 1):
-            kwargs: dict[str, Any] = {
-                "model": self.model,
-                "max_tokens": self.max_tokens,
-                "system": system,
-                "messages": messages,
-            }
-            if tool_specs:
-                kwargs["tools"] = tool_specs
-
-            response = self.client.messages.create(**kwargs)
-            messages.append({"role": "assistant", "content": response.content})
-
-            text_parts = [b.text for b in response.content if b.type == "text"]
-            tool_uses = [b for b in response.content if b.type == "tool_use"]
-
-            for text in text_parts:
-                if text.strip():
-                    self._log(f"thought: {text.strip()}")
-                    transcript.append({"step": step, "type": "thought", "text": text})
-
-            if not tool_uses:
-                answer = "\n".join(text_parts).strip()
-                self._log(f"done in {step} step(s).")
-                return AgentResult(answer=answer, steps=step, transcript=transcript)
-
-            tool_results = []
-            for tu in tool_uses:
-                self._log(f"action: {tu.name}({json.dumps(tu.input)})")
-                output = self._run_tool(tu.name, tu.input)
-                transcript.append({
-                    "step": step, "type": "action",
-                    "tool": tu.name, "input": tu.input, "output": output,
-                })
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
-                    "content": output,
-                })
-            messages.append({"role": "user", "content": tool_results})
-
-        # Out of steps: ask for a best-effort final summary.
-        self._log("max steps reached; requesting final summary.")
-        messages.append({
-            "role": "user",
-            "content": "You have reached your step budget. Stop using tools and "
-                       "give your best final answer now.",
-        })
-        final = self.client.messages.create(
-            model=self.model, max_tokens=self.max_tokens,
-            system=system, messages=messages,
-        )
-        answer = "".join(b.text for b in final.content if b.type == "text").strip()
-        return AgentResult(answer=answer, steps=self.max_steps,
-                           transcript=transcript, stopped_early=True)
+        """Synchronous wrapper around :meth:`run_async`."""
+        return asyncio.run(self.run_async(goal))

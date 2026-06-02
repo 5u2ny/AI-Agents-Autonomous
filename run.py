@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""CLI to run the autonomous agents.
+"""CLI to run the autonomous agents on your Claude subscription.
+
+Prereqs (one time):
+    npm install -g @anthropic-ai/claude-code   # the Claude Code CLI
+    claude login                               # log in with your subscription
+    pip install -r requirements.txt
 
 Examples:
     python run.py gtm "Acme - an AI notetaker for remote sales teams, $30/seat/mo"
@@ -16,7 +21,7 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # dotenv is optional; env vars may be set another way
+    pass  # dotenv is optional
 
 from agents import AIAdoptionAgent, GTMAgent
 
@@ -39,18 +44,14 @@ def main(argv: list[str]) -> int:
     mode = argv[1]
     brief = argv[2] if len(argv) > 2 else DEMOS[mode]
 
-    if mode == "gtm":
-        agent = GTMAgent()
-        result = agent.build_plan(brief)
-    else:
-        agent = AIAdoptionAgent()
-        result = agent.build_plan(brief)
+    agent = GTMAgent() if mode == "gtm" else AIAdoptionAgent()
+    result = agent.build_plan(brief)
 
     print("\n" + "=" * 70)
-    print(f"FINAL ANSWER ({result.steps} steps"
-          f"{', stopped early' if result.stopped_early else ''}):\n")
+    print("EXECUTIVE SUMMARY:\n")
     print(result.answer)
     print("=" * 70)
+    print("Full plan saved under ./runs/")
     return 0
 
 
