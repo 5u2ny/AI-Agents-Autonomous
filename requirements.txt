@@ -1,4 +1,6 @@
-# Runs on your existing Claude subscription via the Claude Agent SDK —
-# no ANTHROPIC_API_KEY required. Just `claude login` first.
-claude-agent-sdk>=0.1.0
+# No API key needed. These agents drive whatever coding-agent CLI you already
+# have logged in (Claude Code, Codex, Gemini, Copilot, Cursor, ...).
+#
+# The engine itself is pure Python standard library. The only (optional)
+# dependency is python-dotenv, for loading a .env file.
 python-dotenv>=1.0.0
