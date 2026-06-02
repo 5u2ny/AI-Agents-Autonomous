@@ -57,27 +57,42 @@ Because the work runs inside a real coding agent, the plans get that agent's
 native abilities — live web research and writing files to `runs/` — with **zero
 extra API keys**.
 
-## Setup
+## Getting started
 
-1. **Have a coding agent installed and logged in.** Pick whichever you already
-   pay for, e.g.:
-   ```bash
-   # Claude Code
-   npm install -g @anthropic-ai/claude-code && claude login
-   # …or OpenAI Codex CLI, Gemini CLI, GitHub Copilot CLI, Cursor CLI, etc.
-   ```
-2. **Install this project's (tiny) deps:**
-   ```bash
-   pip install -r requirements.txt      # Python 3.10+ ; only python-dotenv
-   ```
+### Prerequisites
 
-Check what was detected:
+- **Python 3.10+**
+- **A coding-agent CLI you're already logged into.** Use whichever subscription
+  you already pay for — you only need one. Examples:
+  | Tool | Install & log in |
+  |------|------------------|
+  | Claude Code | `npm install -g @anthropic-ai/claude-code` → `claude login` |
+  | OpenAI Codex CLI | `npm install -g @openai/codex` → `codex login` |
+  | Gemini CLI | `npm install -g @google/gemini-cli` → `gemini` (sign in) |
+  | GitHub Copilot CLI | `npm install -g @github/copilot` → `copilot` (sign in) |
+  | Cursor CLI | `curl https://cursor.com/install -fsS \| bash` → `cursor-agent login` |
+
+  > Exact package names/flags vary by tool version — see each tool's own docs.
+  > Any of them works; you do **not** need an `ANTHROPIC_API_KEY` or similar.
+
+### 1. Clone and install
+
+```bash
+git clone https://github.com/5u2ny/ai-agents-autonomous.git
+cd ai-agents-autonomous
+pip install -r requirements.txt        # only python-dotenv; engine is stdlib
+```
+
+### 2. Confirm a coding agent is detected
 
 ```bash
 python run.py --list
 ```
 
-## Run
+You should see a `✓` next to at least one agent. If not, install/log in to one
+of the tools above (or set `CODING_AGENT_CMD`, see [Configuration](#configuration)).
+
+### 3. Run an agent
 
 ```bash
 # Go-to-market plan (uses the first coding agent it finds)
@@ -87,8 +102,20 @@ python run.py gtm "Acme — an AI notetaker for remote B2B sales teams, $30/seat
 python run.py adopt "A 40-person law firm drowning in contract review" --agent codex
 ```
 
-Run with no brief to use a built-in demo. Deliverables land in
-`runs/gtm_plan.md` and `runs/ai_adoption_plan.md`.
+Run with no brief to use a built-in demo. The agent works autonomously, streams
+its progress, and writes the finished deliverable to:
+
+- `runs/gtm_plan.md`
+- `runs/ai_adoption_plan.md`
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `No coding-agent CLI found on PATH` | Install & log into one of the tools above, or set `CODING_AGENT_CMD`. |
+| `'<tool>' exited with code …` | Make sure that tool is logged in; its headless flags may differ by version — override with `CODING_AGENT_CMD`. |
+| Wrong agent picked | Force one with `--agent NAME` or `CODING_AGENT=NAME`. |
+| Run takes too long / times out | Raise `AGENT_TIMEOUT` (seconds). |
 
 ### Use from Python
 
