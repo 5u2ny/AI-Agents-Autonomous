@@ -1,9 +1,7 @@
 # AI-Agents-Autonomous
 
-Two ready-to-run **autonomous AI agents** — built in the spirit of the projects
-in [e2b-dev/awesome-ai-agents](https://github.com/e2b-dev/awesome-ai-agents)
-(AutoGPT, BabyAGI, etc.): goal-driven loops that plan, call tools, observe
-results, and iterate until the job is done.
+Two ready-to-run **autonomous AI agents** — goal-driven loops that plan, call
+tools, observe results, and iterate until the job is done.
 
 > **No API key. Bring your own coding agent.** These agents drive whatever
 > coding-agent CLI you already subscribe to — **Claude Code, OpenAI Codex,
