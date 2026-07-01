@@ -2,9 +2,6 @@
 
 Practical experiments in autonomous agent workflows: planning, tool use, routing, memory/context handling, and human-readable outputs.
 
-## Portfolio Context
-
-This repo connects to the AI-agent and automation skills on my resume: AI Agents, Automation Technologies, REST APIs, RAG, Prompt Engineering, Codex, Claude Code, and n8n. The useful question is not "can an agent answer?" but "can it break a workflow into steps, call the right tools, keep enough context, and hand a human a decision-ready result?"
 
 ## What This Demonstrates
 
